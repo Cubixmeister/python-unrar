@@ -20,6 +20,7 @@ from __future__ import print_function
 import ctypes
 import os
 import sys
+import io
 
 from unrar import constants
 from unrar import unrarlib
@@ -251,6 +252,37 @@ class RarFile(object):
         finally:
             self._close(handle)
 
+    def open(self, member):
+        # based on https://github.com/matiasb/python-unrar/pull/4/files
+        res = []
+        if isinstance(member, RarInfo):
+            member = member.filename
+        archive = unrarlib.RAROpenArchiveDataEx(self.filename, mode=constants.RAR_OM_EXTRACT)
+        handle = self._open(archive)
+        found, buf = False, []
+        def _callback(msg, UserData, P1, P2):
+            if msg == constants.UCM_PROCESSDATA:
+                data = (ctypes.c_char*P2).from_address(P1).raw
+                buf.append(data)
+            return 1
+        c_callback = unrarlib.UNRARCALLBACK(_callback)
+        unrarlib.RARSetCallback(handle, c_callback, 1)
+        try:
+            rarinfo = self._read_header(handle)
+            while rarinfo is not None:
+                if rarinfo.filename == member:
+                    self._process_current(handle, constants.RAR_TEST)
+                    found = True
+                else:
+                    self._process_current(handle, constants.RAR_SKIP)
+                rarinfo = self._read_header(handle)
+        except unrarlib.UnrarException:
+            raise BadRarFile("Bad RAR archive data.")
+        finally:
+            self._close(handle)
+        if not found:
+            raise KeyError('There is no item named %r in the archive' % member)
+        return io.BytesIO(''.join(buf))
 
 def main(args=None):
     import textwrap
